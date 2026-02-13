@@ -4,8 +4,6 @@ services:
   gateway:
     build: .
     container_name: faas-gateway
-    ports:
-      - "8080:8080"
     environment:
       - FAAS_AUTH_TOKEN=${FAAS_AUTH_TOKEN:-}
     networks:
