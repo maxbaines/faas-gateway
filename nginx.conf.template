@@ -1,0 +1,98 @@
+# FaaS Gateway - Nginx configuration with token authentication
+# Routes requests to function containers on the faas-network
+# FAAS_AUTH_TOKEN and FAAS_AUTH_ENABLED are injected via envsubst at container startup
+
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent"';
+
+    access_log /var/log/nginx/access.log main;
+
+    sendfile on;
+    keepalive_timeout 65;
+
+    # Resolver for Docker DNS (container names)
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    # Map to validate the Authorization header against the expected token
+    # FAAS_AUTH_TOKEN is substituted by envsubst at startup
+    map $http_authorization $auth_valid {
+        default                         0;
+        "Bearer ${FAAS_AUTH_TOKEN}"    1;
+    }
+
+    # FAAS_AUTH_ENABLED is set to "0" or "1" by start.sh (never empty)
+    map ${FAAS_AUTH_ENABLED} $auth_required {
+        default 0;
+        "1"     1;
+    }
+
+    server {
+        listen 8080;
+        server_name _;
+
+        # Health check endpoint (no auth required)
+        location = /health {
+            default_type text/plain;
+            return 200 'OK';
+        }
+
+        # List available info
+        location = / {
+            default_type application/json;
+            return 200 '{"service": "faas-gateway", "usage": "GET /<container-name>[/path]"}';
+        }
+
+        # All other requests route to containers by name
+        # URL: /<container-name>[/optional/path]
+        location ~ ^/([a-zA-Z0-9_-]+)(.*)$ {
+            set $container_name $1;
+            set $container_path $2;
+
+            # default_type must be at location level (not inside if)
+            default_type application/json;
+
+            # Check authentication (if token is configured)
+            set $auth_check "$auth_required:$auth_valid";
+
+            # If auth is required (1) and token is invalid (0), return 401
+            if ($auth_check = "1:0") {
+                return 401 '{"error": "Unauthorized - Invalid or missing Bearer token"}';
+            }
+
+            # Proxy to the container on the Docker network
+            proxy_pass http://$container_name:8080$container_path$is_args$args;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Connection "";
+            proxy_connect_timeout 10s;
+            proxy_read_timeout 60s;
+            proxy_send_timeout 60s;
+
+            # Handle upstream errors
+            proxy_intercept_errors on;
+            error_page 502 503 504 = @upstream_error;
+        }
+
+        # Error handler for upstream failures
+        location @upstream_error {
+            default_type application/json;
+            return 502 '{"error": "Function not found or not running", "container": "$container_name"}';
+        }
+    }
+}
