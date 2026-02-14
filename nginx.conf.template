@@ -40,7 +40,10 @@ http {
     }
 
     server {
+        listen 80;
+        listen [::]:80;
         listen 8080;
+        listen [::]:8080;
         server_name _;
 
         # Health check endpoint (no auth required)
@@ -53,6 +56,34 @@ http {
         location = / {
             default_type application/json;
             return 200 '{"service": "faas-gateway", "usage": "GET /<container-name>[/path]"}';
+        }
+
+        # Orchestrate pipelines
+        location ^~ /orchestrate/ {
+            default_type application/json;
+
+            # Check authentication (if token is configured)
+            set $auth_check "$auth_required:$auth_valid";
+
+            # If auth is required (1) and token is invalid (0), return 401
+            if ($auth_check = "1:0") {
+                return 401 '{"error": "Unauthorized - Invalid or missing Bearer token"}';
+            }
+
+            proxy_pass http://127.0.0.1:3000;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Connection "";
+            proxy_connect_timeout 10s;
+            proxy_read_timeout 60s;
+            proxy_send_timeout 60s;
+
+            # Handle upstream errors
+            proxy_intercept_errors on;
+            error_page 502 503 504 = @upstream_error;
         }
 
         # All other requests route to containers by name

@@ -14,5 +14,9 @@ fi
 # Only substitute these two to avoid breaking nginx variables like $host, $remote_addr etc.
 envsubst '${FAAS_AUTH_TOKEN} ${FAAS_AUTH_ENABLED}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
 
+# Start orchestrator (Bun)
+echo "Starting orchestrator on port 3000"
+bun /opt/orchestrator/index.ts &
+
 # Start nginx
 exec nginx -g 'daemon off;'
